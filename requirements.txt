@@ -1,0 +1,2 @@
+eclipse-sumo==1.27.1
+pygame>=2.6,<3

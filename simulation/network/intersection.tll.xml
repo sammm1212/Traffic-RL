@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<additional xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+            xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/additional_file.xsd">
+    <tlLogic id="center" type="static" programID="fixed_time" offset="0">
+        <phase duration="30" state="GrGr" name="north-south green"/>
+        <phase duration="3" state="yryr" name="north-south yellow"/>
+        <phase duration="1" state="rrrr" name="all red before east-west"/>
+        <phase duration="30" state="rGrG" name="east-west green"/>
+        <phase duration="3" state="ryry" name="east-west yellow"/>
+        <phase duration="1" state="rrrr" name="all red before north-south"/>
+    </tlLogic>
+</additional>
