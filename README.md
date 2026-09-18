@@ -1,144 +1,230 @@
-# Traffic RL — Day 1 SUMO Infrastructure
+# Reinforcement Learning for Adaptive Traffic Signal Control
 
-This repository currently contains a deliberately small SUMO simulation: one
-four-way, signalised junction with one lane per approach and straight-through
-traffic only. SUMO owns the fixed-time signal program; Python connects through
-TraCI and advances the simulation without changing the lights.
+## Project overview
 
-The Python layer records reusable traffic observations and fixed-time baseline
-metrics. No reinforcement-learning code is included at this stage.
+This project investigates whether a reinforcement-learning traffic-light
+controller can improve traffic flow at a simulated four-way junction compared
+with traditional control strategies. The deliberately small scenario has one
+incoming lane from each compass direction and straight-through traffic only.
 
-## Layout
+[SUMO](https://eclipse.dev/sumo/) provides the microscopic traffic simulation,
+and TraCI connects the Python code to the running simulator. Gymnasium exposes
+that connection as a reinforcement-learning environment. The current agent is
+a Deep Q-Network (DQN) implemented in this repository with PyTorch rather than a
+pre-built traffic-RL agent.
+
+## Research question
+
+> Can a Deep Q-Network learn an adaptive traffic signal policy that reduces
+> congestion and vehicle delay compared with fixed-time traffic control?
+
+## Current project status
+
+The following components are present:
+
+- A SUMO network for one signalised four-way junction, with stochastic flows
+  from all approaches and reproducible SUMO seeds.
+- A 68-second fixed-time signal program: 30 seconds north-south green, three
+  seconds yellow, one second all-red, then the equivalent east-west phases.
+- A reusable TraCI adapter that advances SUMO, reads incoming-lane queues,
+  vehicle counts and waiting times, reads or changes the traffic-light phase,
+  and counts departed and completed vehicles.
+- Per-step and run-level metrics, optional CSV/JSON recording, and a Pygame
+  replay viewer.
+- A multi-seed fixed-time experiment and a resumable comparison of fixed-time
+  and random controllers.
+- A Gymnasium environment with reset and step behavior, a random policy, a
+  replay buffer, a PyTorch DQN, and an epsilon-greedy training script.
+
+The DQN path is an early prototype. It can collect transitions and perform
+gradient updates, but the repository does not contain saved models, trained
+checkpoints, evaluation results, or evidence yet that the learned controller
+outperforms either baseline. Its hyperparameters and queue-based reward should
+therefore be treated as experimental.
+
+## Reinforcement-learning formulation
+
+### State / observation space
+
+`TrafficEnvironment` declares a five-value, non-negative `float32` observation:
 
 ```text
-simulation/
-  network/   editable nodes, edges, connections, signal plan, and generated network
-  routes/    stochastic demand from all four approaches
-  config/    SUMO configuration
-src/simulation/        TraCI adapter, metrics, recording, and command-line runner
-src/visualization/     standalone playback of recorded traffic episodes
-tests/       configuration and runner tests
+[north_queue, south_queue, east_queue, west_queue, traffic_phase]
 ```
 
-The generated `intersection.net.xml` is committed because SUMO runs from a
-compiled network. Its small source XML files remain alongside it so the network
-geometry and signal logic can be reviewed and regenerated.
+- The first four values are SUMO's current halted-vehicle counts on the incoming
+  lane for each approach.
+- `traffic_phase` is SUMO's numeric phase index. In the configured program,
+  phase 0 is north-south green, phases 1 and 2 are its yellow and all-red
+  transition, phase 3 is east-west green, and phases 4 and 5 are the reverse
+  yellow and all-red transition.
 
-## Setup
+### Action space
 
-Python 3.11 or later is recommended. Create and activate a virtual environment,
-then install the dependencies:
+The action space is `Discrete(2)`. Actions select a target principal green; they
+do not mean “keep” and “switch”:
+
+```text
+0 = select north-south green (SUMO phase 0)
+1 = select east-west green (SUMO phase 3)
+```
+
+If the requested green is already active, it is held for the five-second
+decision interval. When changing movement, the simulation spends three seconds
+on yellow and one second on all-red before applying the new green. This preserves
+the configured safety transition while still advancing exactly one decision
+interval.
+
+### Reward and episode handling
+
+After each action interval, the reward is calculated exactly as:
+
+```text
+reward = -(north_queue + south_queue + east_queue + west_queue)
+```
+
+The controller is therefore penalized once per decision for vehicles currently
+halted across the junction. The reward does not directly include waiting time,
+throughput, switching cost, or discounting; discounting is applied later when
+the DQN constructs its learning target.
+
+`reset()` asks TraCI to reload the same SUMO command and clears generated and
+completed vehicle counters. `step()` applies the selected target green, returns
+the next observation and reward, and truncates the episode when simulated time
+reaches 300 seconds. It does not currently use a separate terminal condition.
+
+The DQN uses two hidden layers of 64 units, experience replay, epsilon-greedy
+action selection, Smooth L1 loss, discounted bootstrap targets, and a periodically
+synchronized target network. These are implemented locally in `src/agents/`.
+
+## Baseline experiments
+
+Baselines establish performance levels against which a trained agent can later
+be evaluated:
+
+- `src.experiments.fixed_time_baseline` runs SUMO's unchanged signal program
+  over consecutive seeds. It writes per-episode vehicle counts, completion
+  percentage, mean and maximum total queue, cumulative queueing delay, mean
+  queueing delay per generated vehicle, and hourly throughput.
+- `run_baseline_experiments.py` runs the random and fixed-time controllers over
+  the same default seeds. It records total queue-based reward and generated and
+  completed vehicle counts, then reports means and sample standard deviations.
+  Completed seed/controller pairs are saved incrementally so interrupted runs
+  can resume.
+
+No tracked output file currently provides a numerical baseline result, so this
+README does not claim any measured performance advantage.
+
+## Repository structure
+
+```text
+Traffic-RL/
+├── simulation/
+│   ├── config/                 # SUMO run configuration
+│   ├── network/                # Junction sources and compiled network
+│   └── routes/                 # Stochastic straight-through demand
+├── src/
+│   ├── agents/                 # Random policy, DQN, and replay buffer
+│   ├── environment/            # Gymnasium wrapper around the simulation
+│   ├── experiments/            # Fixed-time multi-seed experiment
+│   ├── simulation/             # TraCI adapter, metrics, recording, runner
+│   └── visualization/          # Recorded-episode Pygame replay
+├── tests/                      # Unit and SUMO integration tests
+├── run_baseline_experiments.py # Random-versus-fixed resumable comparison
+├── run_random_agent.py         # One random-controller episode
+├── test_env.py                 # Live SUMO/Gymnasium smoke test
+├── train.py                    # Prototype DQN training loop
+├── requirements.txt
+└── README.md
+```
+
+The compiled `intersection.net.xml` is tracked alongside its editable SUMO XML
+sources so the geometry and signal logic can be inspected and regenerated.
+
+## Installation
+
+Python 3.11 or later is recommended. From the repository root:
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
+python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-The `eclipse-sumo` Python package supplies SUMO, `sumo-gui`, `netconvert`, TraCI,
-and `sumolib` on supported platforms.
+SUMO must be installed and its `sumo` executable must be available. The pinned
+`eclipse-sumo` dependency supplies SUMO, `sumo-gui`, TraCI, and `sumolib` on
+supported platforms. With a separate system installation, configure that
+installation as required by SUMO (commonly by setting `SUMO_HOME`) and ensure
+its `bin` directory is on `PATH`.
 
-## Run
+The requirements also install Gymnasium, NumPy, and PyTorch for the RL code,
+plus pytest for the test suite.
 
-Headless, for 600 simulated seconds with seed 42:
+## Running the project
+
+Run the fixed-time simulation headlessly, optionally recording every step:
 
 ```bash
 python -m src.simulation.run --steps 600 --seed 42
-```
-
-With the graphical interface:
-
-```bash
-python -m src.simulation.run --gui --steps 600 --seed 42
-```
-
-To smoke-test the raw SUMO/TraCI connection and print one observation from
-`TrafficSimulation`:
-
-```bash
-.venv/bin/python test_env.py
-```
-
-The smoke test checks that the canonical incoming lanes and the `center`
-traffic light exist before advancing the simulation. Pass `--gui` to inspect
-the same run in SUMO's graphical interface.
-
-Optionally record every observation for later visualisation. The extension
-selects CSV or JSON format:
-
-```bash
 python -m src.simulation.run --steps 600 --seed 42 --record results/run-42.csv
 ```
 
-`TrafficSimulation.step()` returns a `TrafficMetrics` observation. Its
-`state_vector()` method returns north, south, east, and west queues followed by
-the current signal phase; this is observation data only, not an RL environment.
-
-The run summary reports **mean queueing delay per generated vehicle**. This is
-integrated halted-vehicle occupancy (vehicle-seconds) divided by the number of
-vehicles generated. It is deliberately distinct from the per-step
-`mean_waiting_time` recording field, which uses SUMO's native continuous
-waiting-time values for vehicles currently on the incoming lanes.
-
-`--steps` is the simulation end time in seconds. The demand file defines flows
-for up to 3600 seconds; raise both values if a longer experiment is needed.
-Using the same seed reproduces the same probabilistic vehicle arrivals.
-
-## Replay a recorded episode
-
-The replay tool reads the existing per-step CSV or JSON recording format. It
-does not connect to SUMO or generate traffic state. First create a recording
-when running an episode, then replay it:
+Add `--gui` to either simulation command to use `sumo-gui`. Replay a recording
+without reconnecting to SUMO:
 
 ```bash
-python -m src.simulation.run --steps 600 --seed 42 --record results/replays/baseline-42.csv
-python -m src.visualization.replay results/replays/baseline-42.csv
+python -m src.visualization.replay results/run-42.csv
 ```
 
-Use Space or the on-screen button to play/pause, R to restart, number keys 1–4
-to select 1×, 2×, 5×, or 10× playback, and Q or Escape to close. The replay
-shows recorded queues, signal phase, throughput, and the recording's current
-mean waiting-time value, labelled **Current mean vehicle wait**. This live value
-applies only to vehicles currently on the incoming lanes and is distinct from
-the experiment-level mean queueing delay per generated vehicle. Its
-single-recording panel is independent of playback state so a second panel can
-later display a comparison recording.
-
-## Multi-seed fixed-time baseline
-
-Run the default 20-episode baseline with consecutive seeds 1 through 20:
+Run the fixed-time multi-seed experiment or random-versus-fixed comparison:
 
 ```bash
 python -m src.experiments.fixed_time_baseline --episodes 20
+python run_baseline_experiments.py
 ```
 
-Each episode uses the canonical demand probabilities and fixed-time signal
-program. Demand runs for 900 simulated seconds, followed by a 300-second
-clearance period. Episode-level CSV output is written to
-`results/baseline/fixed_time_baseline.csv`; `--start-seed`,
-`--generation-seconds`, `--clearance-seconds`, and `--output` are available for
-controlled experiments. Throughput is reported as completed vehicles per
-simulated hour over the full 1,200-second episode. Reusing the same seed and
-parameters reproduces the same result.
-
-## Tests
+Exercise the Gymnasium environment against a live SUMO process, or run one
+random-policy episode:
 
 ```bash
-python -m unittest discover -s tests -v
+python test_env.py
+python run_random_agent.py
 ```
 
-## Regenerate the network
-
-After editing one of the network source files, run:
+The current prototype training loop can be started with:
 
 ```bash
-netconvert \
-  --node-files simulation/network/intersection.nod.xml \
-  --edge-files simulation/network/intersection.edg.xml \
-  --connection-files simulation/network/intersection.con.xml \
-  --tllogic-files simulation/network/intersection.tll.xml \
-  --output-file simulation/network/intersection.net.xml
+python train.py
 ```
 
-The signal cycle is 30 seconds north/south green, 3 seconds yellow, 1 second
-all-red, 30 seconds east/west green, 3 seconds yellow, and 1 second all-red.
+It runs three 300-second episodes and prints episode reward, mean training loss,
+and epsilon. It does not save the trained network.
+
+## Testing
+
+Run the existing suite with:
+
+```bash
+pytest
+```
+
+The tests cover SUMO configuration and straight-through routes, TraCI command
+construction and simulation counters, traffic metrics and recordings,
+reproducible baseline scenarios, experiment result handling, replay parsing and
+playback, DQN output/training behavior, and replay-buffer storage and sampling.
+Some tests launch headless SUMO, so the simulator must be available.
+
+## Known limitations
+
+- The junction has one incoming lane per direction, straight-through vehicles
+  only, and no pedestrians, turning traffic, neighboring intersections, or
+  emergency-vehicle behavior.
+- Queueing delay is integrated halted-vehicle occupancy in vehicle-seconds. The
+  per-step `mean_waiting_time` field instead uses SUMO's current incoming-lane
+  waiting-time values; these are related but distinct metrics.
+- The environment's seed is passed to Gymnasium, while reproducible SUMO demand
+  is determined by the command used to launch or reload SUMO. The training
+  script does not seed Python, NumPy, or PyTorch.
+- The prototype has no model persistence, formal trained-agent evaluation, or
+  reported comparison results yet.

@@ -101,6 +101,7 @@ def run_random_episode(seed: int) -> EpisodeResult:
     """Run one reproducible random-controller episode."""
 
     def episode(simulation: TrafficSimulation) -> EpisodeResult:
+        """Drive one live simulation with uniformly sampled target phases."""
         environment = TrafficEnvironment(
             simulation=simulation,
             decision_interval=DECISION_INTERVAL,
@@ -146,6 +147,7 @@ def run_fixed_time_episode(seed: int) -> EpisodeResult:
     """Run one episode under SUMO's unchanged fixed-time signal program."""
 
     def episode(simulation: TrafficSimulation) -> EpisodeResult:
+        """Advance one live simulation without overriding SUMO's signal plan."""
         # This environment is used only to reuse its reward definition. Calling
         # simulation.step() directly leaves SUMO's fixed-time program in control.
         environment = TrafficEnvironment(

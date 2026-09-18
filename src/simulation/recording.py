@@ -43,6 +43,7 @@ class MetricsRecorder:
     """Write step observations as CSV or a JSON array based on file extension."""
 
     def __init__(self, path: Path) -> None:
+        """Open a recording and initialize the writer selected by its suffix."""
         suffix = path.suffix.lower()
         if suffix not in {".csv", ".json"}:
             raise ValueError("recording path must end in .csv or .json")
@@ -77,7 +78,9 @@ class MetricsRecorder:
         self._file.close()
 
     def __enter__(self) -> "MetricsRecorder":
+        """Return this recorder for use as a context manager."""
         return self
 
     def __exit__(self, *_: object) -> None:
+        """Finalize the output when leaving a context-manager block."""
         self.close()

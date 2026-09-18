@@ -51,6 +51,7 @@ class EpisodeRecording:
 
 
 def _number(row: Mapping[str, Any], field: str, row_number: int) -> float:
+    """Read one required recording field as a number with row-aware errors."""
     value = row.get(field)
     if value is None or value == "":
         raise ValueError(f"row {row_number}: missing value for {field}")
@@ -61,6 +62,7 @@ def _number(row: Mapping[str, Any], field: str, row_number: int) -> float:
 
 
 def _parse_frame(row: Mapping[str, Any], row_number: int) -> ReplayFrame:
+    """Validate and convert one serialized metric row into a replay frame."""
     missing = REQUIRED_FIELDS.difference(row)
     if missing:
         fields = ", ".join(sorted(missing))
@@ -112,6 +114,7 @@ class ReplayPlayer:
     """Advance through recorded timestamps without generating traffic state."""
 
     def __init__(self, recording: EpisodeRecording) -> None:
+        """Start playback at the recording's first frame and normal speed."""
         self.recording = recording
         self.frame_index = 0
         self.playing = True
@@ -178,6 +181,7 @@ class JunctionPanel:
     RED = (235, 87, 87)
 
     def __init__(self, pygame_module: Any) -> None:
+        """Create fonts and retain the injected Pygame module used for drawing."""
         self.pg = pygame_module
         self.title_font = self.pg.font.SysFont("arial", 24, bold=True)
         self.body_font = self.pg.font.SysFont("arial", 18)
@@ -290,6 +294,7 @@ class ReplayApp:
     HEIGHT = 700
 
     def __init__(self, recording: EpisodeRecording) -> None:
+        """Prepare replay state while deferring Pygame window creation to run()."""
         try:
             import pygame
         except ImportError as error:

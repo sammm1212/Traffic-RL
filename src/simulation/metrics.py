@@ -31,14 +31,17 @@ class TrafficMetrics:
 
     @property
     def total_queue_length(self) -> int:
+        """Return the number of halted vehicles across all approaches."""
         return sum(item.queue_length for item in self.approaches.values())
 
     @property
     def mean_queue_length(self) -> float:
+        """Return the arithmetic mean of the four approach queue lengths."""
         return fmean(item.queue_length for item in self.approaches.values())
 
     @property
     def maximum_queue_length(self) -> int:
+        """Return the longest individual approach queue in this observation."""
         return max((item.queue_length for item in self.approaches.values()), default=0)
 
     @property
@@ -48,11 +51,13 @@ class TrafficMetrics:
 
     @property
     def mean_waiting_time(self) -> float:
+        """Return current incoming-lane waiting time per incoming vehicle."""
         incoming = sum(item.vehicle_count for item in self.approaches.values())
         return self.total_waiting_time / incoming if incoming else 0.0
 
     @property
     def throughput(self) -> int:
+        """Return the cumulative number of vehicles that completed their routes."""
         return self.vehicles_completed
 
     def state_vector(self) -> list[int]:
@@ -99,6 +104,7 @@ class MetricsAccumulator:
     """Aggregate step observations without depending on TraCI or SUMO IDs."""
 
     def __init__(self) -> None:
+        """Initialize empty queue, delay, and latest-observation aggregates."""
         self._samples = 0
         self._queue_sum = 0
         self._maximum_queue = 0

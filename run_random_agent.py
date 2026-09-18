@@ -1,3 +1,10 @@
+"""Run one headless episode with uniformly random traffic-signal actions.
+
+This script is a simple end-to-end demonstration of the Gymnasium environment:
+TraCI starts SUMO, the random agent samples an action every decision interval,
+and final reward and vehicle counts are printed when the episode is truncated.
+"""
+
 import traci
 
 from src.agents.random_agent import RandomAgent
@@ -33,6 +40,8 @@ try:
     step_count = 0
 
     while True:
+        # The random policy delegates sampling to the environment so every
+        # selected value belongs to its declared discrete action space.
         action = agent.select_action(env)
 
         observation, reward, terminated, truncated, info = env.step(action)
@@ -52,4 +61,5 @@ try:
     print("Vehicles generated:", metrics.vehicles_generated)
 
 finally:
+    # Closing TraCI also terminates the SUMO child process and releases its port.
     traci.close()

@@ -25,6 +25,7 @@ class TrafficSimulation:
         connection: Any,
         reload_args: list[str] | None = None,
     ) -> None:
+        """Store a TraCI connection and optional arguments for episode reloads."""
         self._traci = connection
         self._reload_args = reload_args
         self._vehicles_generated = 0
@@ -39,7 +40,11 @@ class TrafficSimulation:
         return self.observe()
 
     def observe(self) -> TrafficMetrics:
-        """Read the current intersection state without advancing simulation."""
+        """Read the current intersection state without advancing simulation.
+
+        TraCI supplies each incoming lane's halted count, vehicle count, and
+        accumulated waiting time, plus the signal phase and simulation clock.
+        """
 
         approaches = {
             name: ApproachMetrics(
@@ -60,6 +65,11 @@ class TrafficSimulation:
         )
 
     def set_traffic_light(self, action: int) -> None:
+        """Immediately select the principal green phase represented by an action.
+
+        Action 0 selects north-south green (SUMO phase 0); action 1 selects
+        east-west green (SUMO phase 3).
+        """
         if action == 0:
             phase = 0
         elif action == 1:
@@ -85,6 +95,12 @@ class TrafficSimulation:
         return self.observe()
 
     def apply_action(self, action: int, decision_interval: int) -> None:
+        """Hold or safely transition to a target green over one decision interval.
+
+        A change of movement explicitly advances through three seconds of yellow
+        and one second of all-red before applying the requested green. Every
+        internal step also updates generated and completed vehicle counters.
+        """
         if action == 0:
             target_phase = 0
         elif action == 1:

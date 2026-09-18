@@ -55,6 +55,8 @@ def main(argv: Sequence[str] | None = None) -> None:
             reload_args=sumo_command[1:],
         )
 
+        # TraCI exposes the complete SUMO phase program, including safe yellow
+        # and all-red transitions, so the smoke test can display it for review.
         logics = traci.trafficlight.getAllProgramLogics("center")
 
         for logic in logics:
@@ -107,7 +109,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         print(f"Vehicles generated: {metrics.vehicles_generated}")
         print(f"Vehicles completed: {metrics.vehicles_completed}")
 
-        # Gymnasium environment test
+        # Gymnasium's checker validates reset/step return values and declared
+        # observation/action spaces against a live SUMO-backed environment.
         env = TrafficEnvironment(
             simulation=simulation,
             decision_interval=5,
@@ -137,9 +140,7 @@ def main(argv: Sequence[str] | None = None) -> None:
 
         print("Initial observation:", observation)
 
-        # ---------------------------------
-        # Test N/S -> E/W transition
-        # ---------------------------------
+        # Exercise the complete N/S-to-E/W safe transition through TraCI.
 
         simulation.set_traffic_light(0)
 
@@ -156,9 +157,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         print("Reward:", reward)
 
 
-        # ---------------------------------
-        # Test E/W -> N/S transition
-        # ---------------------------------
+        # Exercise the reverse E/W-to-N/S safe transition.
 
         before = simulation.observe().time
 

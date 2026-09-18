@@ -31,7 +31,11 @@ def build_sumo_command(
     steps: int,
     route_path: Path | None = None,
 ) -> list[str]:
-    """Build the SUMO command used by TraCI."""
+    """Build the seeded SUMO command that TraCI will launch.
+
+    The selected binary controls whether a GUI is shown; the configuration,
+    end time, random seed, and optional route override determine the simulation.
+    """
     binary = checkBinary("sumo-gui" if gui else "sumo")
     command = [
         binary,
@@ -57,7 +61,11 @@ def run_simulation(
     route_path: Path | None = None,
     stop_when_empty: bool = True,
 ) -> SimulationSummary:
-    """Run SUMO and return aggregate metrics for the fixed-time baseline."""
+    """Run SUMO and return aggregate metrics for the fixed-time baseline.
+
+    TraCI advances the external simulator one step at a time. Each resulting
+    observation is accumulated and can optionally be recorded for replay.
+    """
     if steps <= 0:
         raise ValueError("steps must be a positive integer")
 
