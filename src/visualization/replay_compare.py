@@ -6,7 +6,7 @@ import argparse
 import csv
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -298,6 +298,117 @@ def queue_geometry(area: Any, road_width: int, approach: str, count: int) -> Que
     return QueueGeometry(centres, overflow, marker)
 
 
+ANIMATION_SECONDS = 0.4  # Simulation seconds; real duration scales with playback speed.
+CAR_COLOURS = (
+    (89, 182, 239),   # blue
+    (167, 143, 231),  # lavender
+    (91, 196, 216),   # cyan
+    (216, 150, 207),  # orchid
+    (221, 188, 160),  # sand
+    (157, 179, 230),  # periwinkle
+    (204, 213, 228),  # silver
+)
+
+
+@dataclass(frozen=True)
+class VisualCar:
+    """One animation-only marker; its identifier is never a SUMO vehicle ID."""
+
+    identifier: int
+    approach: str
+    start_slot: float
+    end_slot: float
+    colour: tuple[int, int, int]
+    crossing: bool = False
+    appear_at: float = 0.0
+
+
+class QueueAnimation:
+    """Reconcile read-only queue frames into bounded schematic car movements."""
+
+    def __init__(self, area: Any, context: tuple[str, int, str] = ("", 0, "")) -> None:
+        self.area = area
+        self.context = context
+        self.queues: dict[str, list[VisualCar]] = {name: [] for name in APPROACHES}
+        self.departing: list[VisualCar] = []
+        self._next_id = 0
+
+    def _car(self, approach: str, start: float, end: float, crossing: bool = False) -> VisualCar:
+        self._next_id += 1
+        identity = f"{self.context[0]}:{self.context[1]}:{self.context[2]}:{approach}:{self._next_id}"
+        value = hashlib.sha256(identity.encode("utf-8")).digest()
+        colour = CAR_COLOURS[int.from_bytes(value[:4], "big") % len(CAR_COLOURS)]
+        return VisualCar(self._next_id, approach, start, end, colour, crossing)
+
+    def reset(self, frame: ReplayFrame) -> None:
+        """Place cars at a frame directly, as for seeks and new recordings."""
+        self.departing.clear()
+        self._next_id = 0
+        self.queues = {
+            name: [self._car(name, float(index), float(index))
+                   for index in range(len(queue_geometry(self.area, ROAD_WIDTH, name,
+                                                         frame.queues[name]).centres))]
+            for name in APPROACHES
+        }
+
+    def advance(self, previous: ReplayFrame, current: ReplayFrame) -> None:
+        """Animate only one adjacent recorded change, using its governing phase."""
+        self.departing.clear()
+        for name in APPROACHES:
+            old_count, new_count = previous.queues[name], current.queues[name]
+            old = self.queues[name]
+            visible = len(queue_geometry(self.area, ROAD_WIDTH, name, new_count).centres)
+            removed = min(max(old_count - new_count, 0), len(old))
+            green = current.light_phase == (0 if name in ("north", "south") else 3)
+            if green:
+                self.departing.extend(replace(car, start_slot=car.end_slot,
+                                               end_slot=float(index - 8), crossing=True)
+                                      for index, car in enumerate(old[:removed]))
+            survivors = old[removed:]
+            updated = [replace(car, start_slot=car.end_slot, end_slot=float(index))
+                       for index, car in enumerate(survivors[:visible])]
+            # Only visible slots receive objects. The +N marker owns the rest.
+            occupied_starts = {car.start_slot for car in updated}
+            for index in range(len(updated), visible):
+                room = max(0, self._last_safe_slot(name) - index)
+                start = index + min(2, room)
+                if new_count < old_count or start in occupied_starts:
+                    car = self._car(name, float(index), float(index))
+                    updated.append(replace(car, appear_at=0.8))
+                else:
+                    updated.append(self._car(name, float(start), float(index)))
+                    occupied_starts.add(float(start))
+            self.queues[name] = updated
+
+    def _last_safe_slot(self, approach: str) -> int:
+        # The overflow position is the last usable centre inside the map.
+        return len(queue_geometry(self.area, ROAD_WIDTH, approach, 1000).centres)
+
+    def visible_cars(self, progress: float) -> tuple[tuple[VisualCar, tuple[int, int]], ...]:
+        """Return visible markers and centres at an animation clock position."""
+        fraction = min(1.0, max(0.0, progress / ANIMATION_SECONDS))
+        eased = 1 - (1 - fraction) ** 3
+        output = []
+        for name in APPROACHES:
+            origin = queue_geometry(self.area, ROAD_WIDTH, name, 1).centres[0]
+            backwards = {"north": (0, -1), "south": (0, 1),
+                         "east": (1, 0), "west": (-1, 0)}[name]
+            for car in [*self.queues[name], *self.departing]:
+                if (car.approach != name or fraction < car.appear_at or
+                        (car.crossing and fraction >= 1)):
+                    continue
+                slot = car.start_slot + (car.end_slot - car.start_slot) * eased
+                centre = (round(origin[0] + backwards[0] * CAR_PITCH * slot),
+                          round(origin[1] + backwards[1] * CAR_PITCH * slot))
+                output.append((car, centre))
+        return tuple(output)
+
+    def positions(self, progress: float) -> tuple[tuple[str, tuple[int, int], bool], ...]:
+        """Return marker positions without changing the existing geometry API."""
+        return tuple((car.approach, centre, car.crossing)
+                     for car, centre in self.visible_cars(progress))
+
+
 class CompareApp:
     """Pygame comparison UI using the existing schematic junction renderer."""
 
@@ -316,6 +427,42 @@ class CompareApp:
         self.panel: JunctionPanel | None = None
         self.buttons: list[tuple[Any, str, int | None]] = []
         self.progress: Any = None
+        self._animation_second = 0
+        self._animations = self._new_animations()
+
+    def _new_animations(self) -> tuple[QueueAnimation, QueueAnimation]:
+        pg = self.pg
+        animations = (QueueAnimation(pg.Rect(35, 158, MAP_SIZE, MAP_SIZE),
+                                     (self.pair.scenario, self.pair.seed, "fixed")),
+                      QueueAnimation(pg.Rect(665, 158, MAP_SIZE, MAP_SIZE),
+                                     (self.pair.scenario, self.pair.seed, "dqn")))
+        for animation, recording in zip(animations, (self.pair.fixed, self.pair.dqn)):
+            animation.reset(recording[0].replay)
+        return animations
+
+    def _reset_animations(self) -> None:
+        self._animations = self._new_animations()
+        self._animation_second = self.player.second
+        if self.player.second:
+            for animation, recording in zip(self._animations, (self.pair.fixed, self.pair.dqn)):
+                animation.reset(recording[self.player.second].replay)
+
+    def _sync_animations(self) -> None:
+        second = self.player.second
+        if second == self._animation_second:
+            return
+        if second == self._animation_second + 1 and self.player.playing:
+            for animation, recording in zip(self._animations, (self.pair.fixed, self.pair.dqn)):
+                animation.advance(recording[second - 1].replay, recording[second].replay)
+            self._animation_second = second
+        else:
+            self._reset_animations()
+
+    def set_pair(self, pair: DemoPair) -> None:
+        """Replace the selected recording and clear its former visual state."""
+        self.pair = pair
+        self.player = PairPlayer(pair)
+        self._reset_animations()
 
     def run(self) -> None:
         """Run the shared playback loop until the user exits."""
@@ -349,14 +496,19 @@ class CompareApp:
             return False
         if key == pg.K_SPACE:
             self.player.toggle()
+            if self.player.second == 0 and self.player.playing:
+                self._reset_animations()
         elif key == pg.K_r:
             self.player.restart()
+            self._reset_animations()
         elif key in (pg.K_1, pg.K_2, pg.K_5, pg.K_0):
             self.player.set_speed({pg.K_1: 1, pg.K_2: 2, pg.K_5: 5, pg.K_0: 10}[key])
         elif key == pg.K_LEFT:
             self.player.seek(self.player.second - 5)
+            self._reset_animations()
         elif key == pg.K_RIGHT:
             self.player.seek(self.player.second + 5)
+            self._reset_animations()
         return True
 
     def handle_click(self, position: tuple[int, int]) -> None:
@@ -364,13 +516,17 @@ class CompareApp:
         if self.progress is not None and self.progress.collidepoint(position):
             fraction = (position[0] - self.progress.x) / self.progress.width
             self.player.seek(round(fraction * (self.pair.duration - 1)))
+            self._reset_animations()
             return
         for bounds, action, value in self.buttons:
             if bounds.collidepoint(position):
                 if action == "play":
                     self.player.toggle()
+                    if self.player.second == 0 and self.player.playing:
+                        self._reset_animations()
                 elif action == "restart":
                     self.player.restart()
+                    self._reset_animations()
                 elif action == "speed" and value is not None:
                     self.player.set_speed(value)
                 return
@@ -380,14 +536,15 @@ class CompareApp:
         font = self.pg.font.SysFont("arial", size, bold=bold)
         screen.blit(font.render(value, True, colour or self.TEXT), (x, y))
 
-    def _car(self, screen: Any, centre: tuple[int, int], approach: str) -> None:
+    def _car(self, screen: Any, centre: tuple[int, int], approach: str,
+             colour: tuple[int, int, int] = CAR_COLOURS[0]) -> None:
         """Draw a top-down car pointing toward the intersection."""
         pg = self.pg
         vertical = approach in ("north", "south")
         width, height = (CAR_WIDTH, CAR_LENGTH) if vertical else (CAR_LENGTH, CAR_WIDTH)
         body = pg.Rect(0, 0, width, height)
         body.center = centre
-        pg.draw.rect(screen, (89, 182, 239), body, border_radius=4)
+        pg.draw.rect(screen, colour, body, border_radius=4)
         pg.draw.rect(screen, (191, 231, 252), body, width=1, border_radius=4)
         windscreen = body.copy()
         if approach == "north":
@@ -400,8 +557,9 @@ class CompareApp:
             windscreen.update(body.right - 6, body.y + 3, 3, body.height - 6)
         pg.draw.rect(screen, (25, 60, 83), windscreen, border_radius=1)
 
-    def _queues(self, screen: Any, area: Any, frame: DemoFrame) -> None:
-        """Draw recorded directional counts as stationary schematic cars."""
+    def _queues(self, screen: Any, area: Any, frame: DemoFrame,
+                animation: QueueAnimation | None = None) -> None:
+        """Draw animated markers while labels use only recorded queue counts."""
         pg = self.pg
         cx, cy = area.center
         labels = {
@@ -413,8 +571,13 @@ class CompareApp:
         for approach in APPROACHES:
             count = frame.replay.queues[approach]
             geometry = queue_geometry(area, ROAD_WIDTH, approach, count)
-            for centre in geometry.centres:
-                self._car(screen, centre, approach)
+            if animation is None:
+                for centre in geometry.centres:
+                    self._car(screen, centre, approach)
+            else:
+                for car, centre in animation.visible_cars(self.player._fraction):
+                    if car.approach == approach:
+                        self._car(screen, centre, approach, car.colour)
             if geometry.overflow_centre is not None:
                 text = self.pg.font.SysFont("arial", 15, bold=True).render(
                     f"+{geometry.overflow}", True, self.TEXT)
@@ -456,7 +619,8 @@ class CompareApp:
         ):
             pg.draw.line(screen, colour, start, end, 3)
 
-    def _panel(self, screen: Any, bounds: Any, title: str, frame: DemoFrame) -> None:
+    def _panel(self, screen: Any, bounds: Any, title: str, frame: DemoFrame,
+               animation: QueueAnimation) -> None:
         pg = self.pg
         assert self.panel is not None
         pg.draw.rect(screen, self.CARD, bounds, border_radius=12)
@@ -467,7 +631,7 @@ class CompareApp:
         pg.draw.rect(screen, self.panel.ROAD, pg.Rect(map_rect.x, cy - ROAD_WIDTH // 2, MAP_SIZE, ROAD_WIDTH))
         self.panel._draw_lane_markings(screen, map_rect, ROAD_WIDTH)
         self._stop_lines(screen, map_rect)
-        self._queues(screen, map_rect, frame)
+        self._queues(screen, map_rect, frame, animation)
         self._signals(screen, map_rect, frame.replay.light_phase)
         x = bounds.x + 422
         self._text(screen, "RECORDED SIGNAL", x, bounds.y + 60, 13, self.MUTED, True)
@@ -492,13 +656,16 @@ class CompareApp:
         """Draw both panels at one recorded second and the common controls."""
         pg = self.pg
         p = self.player
+        self._sync_animations()
         screen.fill(self.BG)
         self._text(screen, "FINAL EVALUATION  /  SINGLE SEED REPLAY", 24, 16, 15, self.ACCENT, True)
         self._text(screen, f"{SCENARIO_NAMES[self.pair.scenario]}  ·  seed {self.pair.seed}", 24, 39, 27, bold=True)
         self._text(screen, f"t = {p.second + 1:03d} / {self.pair.duration} s", 1010, 37, 26, bold=True)
         self._text(screen, f"Recorded second {p.second} · scheduled demand: {demand_period(self.pair.scenario, p.second)}", 25, 80, 17, self.MUTED)
-        self._panel(screen, pg.Rect(20, 103, 610, 500), "FIXED TIME  ·  30 s GREEN", self.pair.fixed[p.second])
-        self._panel(screen, pg.Rect(650, 103, 610, 500), "DQN  ·  15 s MIN GREEN", self.pair.dqn[p.second])
+        self._panel(screen, pg.Rect(20, 103, 610, 500), "FIXED TIME  ·  30 s GREEN",
+                    self.pair.fixed[p.second], self._animations[0])
+        self._panel(screen, pg.Rect(650, 103, 610, 500), "DQN  ·  15 s MIN GREEN",
+                    self.pair.dqn[p.second], self._animations[1])
         if self.pair.scenario == "changing":
             for boundary in (100, 200):
                 x = 24 + round((boundary - 1) / (p.pair.duration - 1) * 1232)

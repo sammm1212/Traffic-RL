@@ -30,18 +30,29 @@ checkpoint hash, recorded CSV hashes, saved demand-file hash, matched
 timelines, and final metrics before opening the window. If a record is missing
 or invalid, it reports the problem instead of creating a replacement.
 
-Both panels use the same recorded second. Each small car is a stationary,
-schematic marker for one recorded halted vehicle, not its actual SUMO position
-or trajectory. Up to six fit per incoming approach; a `+N` marker shows any
-additional cars, while the direction label keeps the full recorded count.
+Both panels use the same recorded second. Small cars are schematic markers for
+recorded halted-vehicle queues, not actual SUMO positions or trajectories.
+They briefly join the rear when a recorded queue grows; when it shrinks, front
+markers move through the junction only if the recorded interval had a compatible
+green signal. Otherwise they disappear without depicting a crossing. The motion
+illustrates aggregate queue changes and does not reconstruct individual vehicle
+movements or change the traffic simulation or evaluation results. During motion,
+the direction labels show the current recorded counts. Up to six settled cars
+fit per incoming approach; a `+N` marker shows any additional cars. Animation
+lasts 0.4 simulation seconds (about 0.04 real seconds at 10×). It pauses with
+the replay and resets when seeking, restarting, or skipping recorded frames.
+
+Car colours are schematic, drawn from a fixed palette using the scenario,
+seed, controller side, approach, and visual car creation order. They stay fixed
+for each marker and repeat on the same replay.
+
 The prominent stop-line signals and phase label show the actual recorded phase
 governing the displayed second. During playback, “Queue s / inserted” means
 accumulated halted-vehicle seconds divided by vehicles inserted up to that
 second. The end card compares the selected seed only, with DQN-minus-fixed
-differences; it does not show the
-30-seed aggregate result. For changing demand, the label and timeline markers
-show the scheduled arrival periods at seconds 0, 100, and 200; existing queues
-continue across those boundaries.
+differences; it does not show the 30-seed aggregate result. For changing demand,
+the label and timeline markers show the scheduled arrival periods at seconds 0,
+100, and 200; existing queues continue across those boundaries.
 
 Controls: **Space** play/pause; **R** restart; **1**, **2**, **5**, **0** select
 1×, 2×, 5×, 10× playback; **Left/Right** seek by five recorded seconds; click
@@ -57,7 +68,7 @@ the presentation.
 
 ## Current project status
 
-The following components are present:
+The repository now contains:
 
 - A SUMO network for one signalised four-way junction, with stochastic flows
   from all approaches and reproducible SUMO seeds.
@@ -66,18 +77,23 @@ The following components are present:
 - A reusable TraCI adapter that advances SUMO, reads incoming-lane queues,
   vehicle counts and waiting times, reads or changes the traffic-light phase,
   and counts departed and completed vehicles.
-- Per-step and run-level metrics, optional CSV/JSON recording, and a Pygame
-  replay viewer.
+- Per-step and run-level metrics, optional CSV/JSON recording, a single-recording
+  Pygame replay, and the paired presentation replay described above.
 - A multi-seed fixed-time experiment and a resumable comparison of fixed-time
   and random controllers.
-- A Gymnasium environment with reset and step behavior, a random policy, a
-  replay buffer, a PyTorch DQN, and an epsilon-greedy training script.
+- A Gymnasium environment, random policy, replay buffer, PyTorch DQN, and
+  training metrics and checkpoints from the 100-episode experiment.
+- An isolated 700-episode training experiment with resumable checkpoints and
+  a separate validation set; see [EXTENDED_TRAINING.md](EXTENDED_TRAINING.md).
+- Paired fixed-time/DQN evaluations, four frozen-demand scenarios, signal
+  allocation diagnostics, minimum-green sensitivity analysis, and a completed
+  independent final evaluation. The presentation replay uses that final data.
 
-The DQN path is an early prototype. It can collect transitions and perform
-gradient updates, but the repository does not contain saved models, trained
-checkpoints, evaluation results, or evidence yet that the learned controller
-outperforms either baseline. Its hyperparameters and queue-based reward should
-therefore be treated as experimental.
+The final result is scenario-dependent: the frozen 15-second minimum-green DQN
+reduced mean queue and the project's waiting measure in all four tested demand
+profiles, but completed more vehicles than fixed time only in balanced and
+north-south-heavy demand. See [Final independent evaluation](#final-independent-evaluation)
+for the prespecified comparison and its limits.
 
 ## Reinforcement-learning formulation
 
@@ -133,11 +149,16 @@ reaches 300 seconds. It does not currently use a separate terminal condition.
 The DQN uses two hidden layers of 64 units, experience replay, epsilon-greedy
 action selection, Smooth L1 loss, discounted bootstrap targets, and a periodically
 synchronized target network. These are implemented locally in `src/agents/`.
+The standard `train.py` run lasts 100 episodes of 300 seconds and writes an
+episode-metrics CSV and a final checkpoint under `results/training/`. The
+minimum-green checkpoint used below was trained with a 10-second guard; the
+15-second presentation controller applies a different guard to those same
+frozen network weights.
 
 ## Baseline experiments
 
-Baselines establish performance levels against which a trained agent can later
-be evaluated:
+Baselines establish performance levels against which the trained agent is
+evaluated:
 
 - `src.experiments.fixed_time_baseline` runs SUMO's unchanged signal program
   over consecutive seeds. It writes per-episode vehicle counts, completion
@@ -149,8 +170,56 @@ be evaluated:
   Completed seed/controller pairs are saved incrementally so interrupted runs
   can resume.
 
-No tracked output file currently provides a numerical baseline result, so this
-README does not claim any measured performance advantage.
+Baseline outputs are saved in `results/baseline/`, `results/baseline_per_seed.csv`,
+and `results/baseline_summary.csv`. These are separate from the matched-demand
+final evaluation below.
+
+## Final independent evaluation
+
+The frozen checkpoint `results/training/dqn_100_episode_min_green.pt` was
+evaluated against unchanged fixed time on 30 new matched seeds (4000–4029) for
+each of four 300-second demand scenarios. The 15-second minimum-green setting
+was selected using development seeds 3000–3029 before the final seeds were
+evaluated. The same checkpoint weights were used for all settings; the final
+evaluation did not retrain the DQN. The checked-in audit reports that all 600
+episodes passed its validation.
+
+The table gives mean DQN-minus-fixed differences. Brackets are two-sided 95%
+paired intervals across the 30 seeds in each scenario. Waiting is accumulated
+halted-vehicle seconds divided by inserted vehicles, not the mean journey delay
+of completed vehicles.
+
+| Demand scenario | Completed vehicles | Waiting (s/inserted) | Mean halted queue |
+|---|---:|---:|---:|
+| Balanced | +1.63 [+0.36, +2.91] | −2.76 [−3.26, −2.27] | −1.33 [−1.59, −1.08] |
+| NS-heavy | +2.87 [+1.75, +3.99] | −3.03 [−3.51, −2.56] | −1.42 [−1.64, −1.20] |
+| EW-heavy | −1.77 [−3.01, −0.52] | −1.78 [−2.27, −1.28] | −0.87 [−1.12, −0.62] |
+| Changing | −1.37 [−2.27, −0.46] | −2.68 [−3.17, −2.19] | −1.29 [−1.54, −1.05] |
+
+All four scenarios have 0.48 expected arrivals per second. Balanced demand
+shares arrivals equally; NS-heavy and EW-heavy shift the directional shares;
+changing demand uses balanced, NS-heavy, and EW-heavy in consecutive 100-second
+windows. Results, supporting signal-allocation comparisons, protocol, record
+hashes, and interpretation are in
+[results/final_evaluation/report.md](results/final_evaluation/report.md) and
+[results/final_evaluation/interpretation.md](results/final_evaluation/interpretation.md).
+The 10-, 20-, and 30-second minimum-green comparisons are exploratory; see
+[results/min_green_sensitivity/report.md](results/min_green_sensitivity/report.md).
+
+The saved studies are organised as follows:
+
+| Stage | Script | Saved output |
+|---|---|---|
+| Standard DQN training and diagnostics | `train.py`, `scripts/plot_training_metrics.py` | `results/training/` |
+| Isolated extended training and checkpoint selection | `train_extended.py`, `validate_extended.py` | `results/extended_training/` |
+| Earlier paired fixed-time/DQN comparison | `evaluate_paired.py` | `results/evaluation/paired_30_min_green/` |
+| Four-scenario development study | `evaluate_generalisation.py` | `results/generalisation/` |
+| Signal allocation and green-duration diagnostics | `evaluate_signal_allocation.py`, `evaluate_min_green_sensitivity.py` | `results/signal_allocation/`, `results/min_green_sensitivity/` |
+| Independent final study | `evaluate_final.py` | `results/final_evaluation/` |
+
+The development and sensitivity studies informed the prespecified 15-second
+setting. The final study used separate seeds and preserved its own protocol and
+per-second records.
 
 ## Repository structure
 
@@ -163,14 +232,19 @@ Traffic-RL/
 ├── src/
 │   ├── agents/                 # Random policy, DQN, and replay buffer
 │   ├── environment/            # Gymnasium wrapper around the simulation
-│   ├── experiments/            # Fixed-time multi-seed experiment
+│   ├── experiments/            # Baselines and paired demand generation
 │   ├── simulation/             # TraCI adapter, metrics, recording, runner
-│   └── visualization/          # Recorded-episode Pygame replay
+│   └── visualization/          # Single and paired Pygame replays
 ├── tests/                      # Unit and SUMO integration tests
 ├── run_baseline_experiments.py # Random-versus-fixed resumable comparison
 ├── run_random_agent.py         # One random-controller episode
 ├── test_env.py                 # Live SUMO/Gymnasium smoke test
-├── train.py                    # Prototype DQN training loop
+├── train.py                    # 100-episode DQN training
+├── train_extended.py           # Isolated resumable 700-episode experiment
+├── validate_extended.py       # Extended-checkpoint validation
+├── evaluate_*.py               # Paired, scenario, diagnostic, and final studies
+├── results/                    # Saved metrics, checkpoints, and reports
+├── EXTENDED_TRAINING.md        # Extended experiment protocol
 ├── requirements.txt
 └── README.md
 ```
@@ -196,7 +270,7 @@ installation as required by SUMO (commonly by setting `SUMO_HOME`) and ensure
 its `bin` directory is on `PATH`.
 
 The requirements also install Gymnasium, NumPy, and PyTorch for the RL code,
-plus pytest for the test suite.
+Matplotlib for plots, Pygame for replays, and pytest for the test suite.
 
 ## Running the project
 
@@ -229,14 +303,28 @@ python test_env.py
 python run_random_agent.py
 ```
 
-The current prototype training loop can be started with:
+Run the standard 100-episode training experiment with:
 
 ```bash
 python train.py
 ```
 
-It runs three 300-second episodes and prints episode reward, mean training loss,
-and epsilon. It does not save the trained network.
+It records reward, loss, epsilon, waiting, queue, and throughput to
+`results/training/training_metrics.csv` and saves a checkpoint at
+`results/training/dqn_100_episode.pt`. This command trains a new model; the
+presentation replay and report viewing do not require it. The isolated
+extended training and validation commands are documented in
+[EXTENDED_TRAINING.md](EXTENDED_TRAINING.md).
+
+To verify the saved final evaluation and rebuild its report from existing
+records without running SUMO, use:
+
+```bash
+.venv/bin/python evaluate_final.py --report-only
+```
+
+The final evaluator's normal mode runs SUMO and writes evaluation artifacts;
+use the checked-in reports and replay to inspect the completed experiment.
 
 ## Testing
 
@@ -248,9 +336,14 @@ pytest
 
 The tests cover SUMO configuration and straight-through routes, TraCI command
 construction and simulation counters, traffic metrics and recordings,
-reproducible baseline scenarios, experiment result handling, replay parsing and
-playback, DQN output/training behavior, and replay-buffer storage and sampling.
-Some tests launch headless SUMO, so the simulator must be available.
+reproducible baseline scenarios, experiment result handling, replay parsing,
+playback and schematic animations, DQN training, and saved-evaluation validation.
+Some tests launch headless SUMO, so the simulator must be available. If the
+local readline extension causes pytest to crash on startup, run:
+
+```bash
+.venv/bin/python -c 'import sys; sys.modules["readline"] = None; import pytest; raise SystemExit(pytest.main(["-q"]))'
+```
 
 ## Known limitations
 
@@ -260,8 +353,13 @@ Some tests launch headless SUMO, so the simulator must be available.
 - Queueing delay is integrated halted-vehicle occupancy in vehicle-seconds. The
   per-step `mean_waiting_time` field instead uses SUMO's current incoming-lane
   waiting-time values; these are related but distinct metrics.
-- The environment's seed is passed to Gymnasium, while reproducible SUMO demand
-  is determined by the command used to launch or reload SUMO. The training
-  script does not seed Python, NumPy, or PyTorch.
-- The prototype has no model persistence, formal trained-agent evaluation, or
-  reported comparison results yet.
+- Reproducible SUMO demand is determined by the seed and route file used to
+  launch or reload SUMO. The standard 100-episode `train.py` run reuses its
+  seeded demand realisation; the isolated extended experiment uses a different
+  SUMO seed for each training episode.
+- The final evaluation covers one junction, four specified demand profiles,
+  and 300-second episodes without a separate clearance period. Its results do
+  not establish performance at other intersections or under every demand mix.
+- The replay has per-second aggregate queue records, not vehicle IDs or paths.
+  Its animated, coloured cars are presentation markers and cannot establish
+  which actual SUMO vehicles crossed or completed a journey.
