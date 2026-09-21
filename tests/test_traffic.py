@@ -71,6 +71,34 @@ class TrafficSimulationTests(unittest.TestCase):
         )
         self.assertEqual(simulation.step.call_count, 5)
 
+    def test_action_reports_each_internal_step_to_metrics_callback(self) -> None:
+        connection = MagicMock()
+        connection.trafficlight.getPhase.return_value = 0
+        simulation = TrafficSimulation(connection)
+        observations = [object() for _ in range(5)]
+        simulation.step = MagicMock(side_effect=observations)
+        received = []
+
+        simulation.apply_action(
+            action=0,
+            decision_interval=5,
+            on_step=received.append,
+        )
+
+        self.assertEqual(received, observations)
+
+    def test_valid_switch_preserves_yellow_all_red_green_sequence(self) -> None:
+        connection = MagicMock()
+        connection.trafficlight.getPhase.return_value = 0
+        simulation = TrafficSimulation(connection)
+        simulation.step = MagicMock()
+
+        simulation.apply_action(action=1, decision_interval=5)
+
+        phases = [call.args[1] for call in connection.trafficlight.setPhase.call_args_list]
+        self.assertEqual(phases, [1, 2, 3])
+        self.assertEqual(simulation.step.call_count, 5)
+
 
 if __name__ == "__main__":
     unittest.main()

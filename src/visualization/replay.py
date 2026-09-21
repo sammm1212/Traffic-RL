@@ -219,11 +219,12 @@ class JunctionPanel:
             for x in range(x1, x2, 24):
                 pg.draw.line(surface, self.ROAD_LINE, (x, cy), (min(x + 12, x2), cy), 2)
 
-    def _draw_queues(self, surface: Any, area: Any, road_width: int, frame: ReplayFrame) -> None:
+    def _draw_queues(self, surface: Any, area: Any, road_width: int, frame: ReplayFrame,
+                     maximum: int | None = None) -> None:
         pg = self.pg
         cx, cy = area.center
         queue_space = (area.width - road_width) // 2 - 28
-        maximum = max(max(frame.queues.values()), 1)
+        maximum = max(maximum if maximum is not None else max(frame.queues.values()), 1)
         lengths = {
             name: round(queue_space * value / maximum)
             for name, value in frame.queues.items()

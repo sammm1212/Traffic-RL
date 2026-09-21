@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from .metrics import ApproachMetrics, TrafficMetrics
@@ -94,13 +95,29 @@ class TrafficSimulation:
 
         return self.observe()
 
-    def apply_action(self, action: int, decision_interval: int) -> None:
+    def set_reload_args(self, reload_args: list[str]) -> None:
+        """Set the SUMO arguments used by the next episode reset."""
+        self._reload_args = list(reload_args)
+
+    def apply_action(
+        self,
+        action: int,
+        decision_interval: int,
+        on_step: Callable[[TrafficMetrics], None] | None = None,
+    ) -> None:
         """Hold or safely transition to a target green over one decision interval.
 
         A change of movement explicitly advances through three seconds of yellow
         and one second of all-red before applying the requested green. Every
-        internal step also updates generated and completed vehicle counters.
+        internal step also updates generated and completed vehicle counters. If
+        supplied, ``on_step`` receives each one-second observation so callers
+        can aggregate metrics without changing the simulation logic.
         """
+        def advance() -> None:
+            metrics = self.step()
+            if on_step is not None:
+                on_step(metrics)
+
         if action == 0:
             target_phase = 0
         elif action == 1:
@@ -127,7 +144,7 @@ class TrafficSimulation:
                 target_phase,
             )
             for _ in range(decision_interval):
-                self.step()
+                advance()
 
             return
 
@@ -140,7 +157,7 @@ class TrafficSimulation:
 
             # 3 seconds N/S yellow
             for _ in range(3):
-                self.step()
+                advance()
 
             self._traci.trafficlight.setPhase(
                 TRAFFIC_LIGHT_ID,
@@ -148,7 +165,7 @@ class TrafficSimulation:
             )
 
             # 1 second all red
-            self.step()
+            advance()
 
             self._traci.trafficlight.setPhase(
                 TRAFFIC_LIGHT_ID,
@@ -158,7 +175,7 @@ class TrafficSimulation:
             remaining_steps = decision_interval - 4
 
             for _ in range(remaining_steps):
-                self.step()
+                advance()
 
             return
 
@@ -171,7 +188,7 @@ class TrafficSimulation:
 
             # 3 seconds E/W yellow
             for _ in range(3):
-                self.step()
+                advance()
 
             self._traci.trafficlight.setPhase(
                 TRAFFIC_LIGHT_ID,
@@ -179,7 +196,7 @@ class TrafficSimulation:
             )
 
             # 1 second all red
-            self.step()
+            advance()
 
             self._traci.trafficlight.setPhase(
                 TRAFFIC_LIGHT_ID,
@@ -189,6 +206,6 @@ class TrafficSimulation:
             remaining_steps = decision_interval - 4
 
             for _ in range(remaining_steps):
-                self.step()
+                advance()
 
             return

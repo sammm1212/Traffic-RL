@@ -13,6 +13,39 @@ that connection as a reinforcement-learning environment. The current agent is
 a Deep Q-Network (DQN) implemented in this repository with PyTorch rather than a
 pre-built traffic-RL agent.
 
+## Final evaluation presentation replay
+
+Launch the paired Pygame replay from the repository root:
+
+```bash
+.venv/bin/python -m src.visualization.replay_compare --scenario balanced --seed 4000
+```
+
+The default is **balanced, seed 4000**, the first seed in the independent
+evaluation range. Select `balanced`, `ns_heavy`, `ew_heavy`, or `changing` and
+any seed from 4000 through 4029. The viewer reads the existing per-second
+records in `results/final_evaluation/records/`; no export, SUMO run, demand
+generation, model loading, or training is required. It verifies the frozen
+checkpoint hash, recorded CSV hashes, saved demand-file hash, matched
+timelines, and final metrics before opening the window. If a record is missing
+or invalid, it reports the problem instead of creating a replacement.
+
+Both panels use the same recorded second and queue-bar scale. The bars show
+aggregate stopped vehicles by approach, not individual vehicle positions.
+The signal colour shows the phase governing the displayed second. During
+playback, “Queue s / inserted” means accumulated halted-vehicle seconds
+divided by vehicles inserted up to that second. The end card compares the
+selected seed only, with DQN-minus-fixed differences; it does not show the
+30-seed aggregate result. For changing demand, the label and timeline markers
+show the scheduled arrival periods at seconds 0, 100, and 200; existing queues
+continue across those boundaries.
+
+Controls: **Space** play/pause; **R** restart; **1**, **2**, **5** playback
+speed; **Left/Right** seek by five recorded seconds; click the progress bar
+to seek; **Esc** exit. Playback pauses at the final second, and R starts again
+without loading SUMO or the checkpoint. For a headless rendering check, set
+`SDL_VIDEODRIVER=dummy`; use a normal desktop display for the presentation.
+
 ## Research question
 
 > Can a Deep Q-Network learn an adaptive traffic signal policy that reduces
