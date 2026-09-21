@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
-from .replay import APPROACHES, JunctionPanel, PHASE_LABELS, ReplayFrame
+from .replay import APPROACHES, JunctionPanel, ReplayFrame
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -20,7 +20,9 @@ CHECKPOINT_SHA256 = "e820fb9912eab609f7e10e295d01375e944faf655f4bd9c660d7e8cbcb2
 SCENARIOS = ("balanced", "ns_heavy", "ew_heavy", "changing")
 SCENARIO_NAMES = {"balanced": "Balanced", "ns_heavy": "NS-heavy", "ew_heavy": "EW-heavy", "changing": "Changing demand"}
 PHASE_KINDS = {0: "ns_green", 1: "yellow", 2: "all_red", 3: "ew_green", 4: "yellow", 5: "all_red"}
-SPEEDS = (1, 2, 5)
+SHORT_PHASE_LABELS = {0: "NS GREEN", 1: "NS YELLOW", 2: "ALL RED",
+                      3: "EW GREEN", 4: "EW YELLOW", 5: "ALL RED"}
+SPEEDS = (1, 2, 5, 10)
 
 
 def digest(path: Path) -> str:
@@ -228,7 +230,7 @@ class PairPlayer:
     def set_speed(self, speed: int) -> None:
         """Set one of the documented shared playback speeds."""
         if speed not in SPEEDS:
-            raise ValueError("speed must be 1, 2, or 5")
+            raise ValueError("speed must be 1, 2, 5, or 10")
         self.speed = speed
 
     def toggle(self) -> None:
@@ -250,6 +252,50 @@ def summary_rows(pair: DemoPair) -> tuple[tuple[str, str, str, str], ...]:
         output.append((label, format(fixed[index], fmt), format(dqn[index], fmt),
                        format(dqn[index] - fixed[index], f"+{fmt}")))
     return tuple(output)
+
+
+CAR_LENGTH = 17
+CAR_WIDTH = 13
+CAR_PITCH = 20
+STOP_GAP = 5
+ROAD_WIDTH = 104
+MAP_SIZE = 390
+
+
+@dataclass(frozen=True)
+class QueueGeometry:
+    """Schematic car centres and a count hidden beyond the available road."""
+
+    centres: tuple[tuple[int, int], ...]
+    overflow: int
+    overflow_centre: tuple[int, int] | None
+
+
+def queue_geometry(area: Any, road_width: int, approach: str, count: int) -> QueueGeometry:
+    """Place halted cars back from one stop line within an incoming lane."""
+    if approach not in APPROACHES or count < 0:
+        raise ValueError("invalid approach or queue count")
+    cx, cy = area.center
+    half = road_width // 2
+    lane = road_width // 4
+    first = half + STOP_GAP + (CAR_LENGTH + 1) // 2
+    directions = {
+        "north": ((cx - lane, cy - first), (0, -1)),
+        "south": ((cx + lane, cy + first), (0, 1)),
+        "east": ((cx + first, cy - lane), (1, 0)),
+        "west": ((cx - first, cy + lane), (-1, 0)),
+    }
+    origin, vector = directions[approach]
+    reach = (area.height if vector[0] == 0 else area.width) // 2
+    slots = max(0, 1 + (reach - 10 - (CAR_LENGTH + 1) // 2 - first) // CAR_PITCH)
+    visible = min(count, max(0, slots - (1 if count > slots else 0)))
+    centres = tuple((origin[0] + vector[0] * index * CAR_PITCH,
+                     origin[1] + vector[1] * index * CAR_PITCH)
+                    for index in range(visible))
+    overflow = count - visible
+    marker = ((origin[0] + vector[0] * visible * CAR_PITCH,
+               origin[1] + vector[1] * visible * CAR_PITCH) if overflow else None)
+    return QueueGeometry(centres, overflow, marker)
 
 
 class CompareApp:
@@ -305,8 +351,8 @@ class CompareApp:
             self.player.toggle()
         elif key == pg.K_r:
             self.player.restart()
-        elif key in (pg.K_1, pg.K_2, pg.K_5):
-            self.player.set_speed({pg.K_1: 1, pg.K_2: 2, pg.K_5: 5}[key])
+        elif key in (pg.K_1, pg.K_2, pg.K_5, pg.K_0):
+            self.player.set_speed({pg.K_1: 1, pg.K_2: 2, pg.K_5: 5, pg.K_0: 10}[key])
         elif key == pg.K_LEFT:
             self.player.seek(self.player.second - 5)
         elif key == pg.K_RIGHT:
@@ -334,22 +380,102 @@ class CompareApp:
         font = self.pg.font.SysFont("arial", size, bold=bold)
         screen.blit(font.render(value, True, colour or self.TEXT), (x, y))
 
+    def _car(self, screen: Any, centre: tuple[int, int], approach: str) -> None:
+        """Draw a top-down car pointing toward the intersection."""
+        pg = self.pg
+        vertical = approach in ("north", "south")
+        width, height = (CAR_WIDTH, CAR_LENGTH) if vertical else (CAR_LENGTH, CAR_WIDTH)
+        body = pg.Rect(0, 0, width, height)
+        body.center = centre
+        pg.draw.rect(screen, (89, 182, 239), body, border_radius=4)
+        pg.draw.rect(screen, (191, 231, 252), body, width=1, border_radius=4)
+        windscreen = body.copy()
+        if approach == "north":
+            windscreen.update(body.x + 3, body.bottom - 6, body.width - 6, 3)
+        elif approach == "south":
+            windscreen.update(body.x + 3, body.y + 3, body.width - 6, 3)
+        elif approach == "east":
+            windscreen.update(body.x + 3, body.y + 3, 3, body.height - 6)
+        else:
+            windscreen.update(body.right - 6, body.y + 3, 3, body.height - 6)
+        pg.draw.rect(screen, (25, 60, 83), windscreen, border_radius=1)
+
+    def _queues(self, screen: Any, area: Any, frame: DemoFrame) -> None:
+        """Draw recorded directional counts as stationary schematic cars."""
+        pg = self.pg
+        cx, cy = area.center
+        labels = {
+            "north": (cx + ROAD_WIDTH // 2 + 8, area.top + 5),
+            "south": (cx - ROAD_WIDTH // 2 - 64, area.bottom - 26),
+            "east": (area.right - 62, cy + ROAD_WIDTH // 2 + 6),
+            "west": (area.left + 8, cy - ROAD_WIDTH // 2 - 26),
+        }
+        for approach in APPROACHES:
+            count = frame.replay.queues[approach]
+            geometry = queue_geometry(area, ROAD_WIDTH, approach, count)
+            for centre in geometry.centres:
+                self._car(screen, centre, approach)
+            if geometry.overflow_centre is not None:
+                text = self.pg.font.SysFont("arial", 15, bold=True).render(
+                    f"+{geometry.overflow}", True, self.TEXT)
+                screen.blit(text, text.get_rect(center=geometry.overflow_centre))
+            label = self.pg.font.SysFont("arial", 16, bold=True).render(
+                f"{approach[0].upper()}  {count}", True, self.TEXT)
+            background = label.get_rect(topleft=labels[approach]).inflate(10, 6)
+            pg.draw.rect(screen, (31, 43, 56), background, border_radius=5)
+            screen.blit(label, labels[approach])
+
+    def _signals(self, screen: Any, area: Any, phase: int) -> None:
+        """Show the actual recorded NS and EW phase at four stop lines."""
+        pg = self.pg
+        assert self.panel is not None
+        cx, cy = area.center
+        half = ROAD_WIDTH // 2
+        signals = (
+            ((cx - half - 17, cy - half - 5), "ns"),
+            ((cx + half + 17, cy + half + 5), "ns"),
+            ((cx + half + 5, cy - half - 17), "ew"),
+            ((cx - half - 5, cy + half + 17), "ew"),
+        )
+        for centre, movement in signals:
+            pg.draw.circle(screen, (10, 17, 24), centre, 16)
+            pg.draw.circle(screen, self.panel._signal_colour(phase, movement=movement), centre, 12)
+            pg.draw.circle(screen, (230, 238, 246), centre, 16, width=2)
+
+    def _stop_lines(self, screen: Any, area: Any) -> None:
+        """Mark each incoming lane's stop line at the junction edge."""
+        pg = self.pg
+        cx, cy = area.center
+        half = ROAD_WIDTH // 2
+        colour = (225, 232, 237)
+        for start, end in (
+            ((cx - half, cy - half - 3), (cx, cy - half - 3)),
+            ((cx, cy + half + 3), (cx + half, cy + half + 3)),
+            ((cx + half + 3, cy - half), (cx + half + 3, cy)),
+            ((cx - half - 3, cy), (cx - half - 3, cy + half)),
+        ):
+            pg.draw.line(screen, colour, start, end, 3)
+
     def _panel(self, screen: Any, bounds: Any, title: str, frame: DemoFrame) -> None:
         pg = self.pg
         assert self.panel is not None
         pg.draw.rect(screen, self.CARD, bounds, border_radius=12)
         self._text(screen, title, bounds.x + 20, bounds.y + 16, 25, bold=True)
-        map_rect = pg.Rect(bounds.x + 18, bounds.y + 67, 310, 310)
+        map_rect = pg.Rect(bounds.x + 15, bounds.y + 55, MAP_SIZE, MAP_SIZE)
         cx, cy = map_rect.center
-        road_width = 90
-        pg.draw.rect(screen, self.panel.ROAD, pg.Rect(cx - 45, map_rect.y, road_width, 310))
-        pg.draw.rect(screen, self.panel.ROAD, pg.Rect(map_rect.x, cy - 45, 310, road_width))
-        self.panel._draw_lane_markings(screen, map_rect, road_width)
-        self.panel._draw_queues(screen, map_rect, road_width, frame.replay, self.pair.queue_scale)
-        self.panel._draw_signals(screen, map_rect, road_width, frame.replay.light_phase)
-        x = bounds.x + 345
-        self._text(screen, "SIGNAL DURING SECOND", x, bounds.y + 70, 14, self.MUTED, True)
-        self._text(screen, PHASE_LABELS[frame.replay.light_phase], x, bounds.y + 94, 18)
+        pg.draw.rect(screen, self.panel.ROAD, pg.Rect(cx - ROAD_WIDTH // 2, map_rect.y, ROAD_WIDTH, MAP_SIZE))
+        pg.draw.rect(screen, self.panel.ROAD, pg.Rect(map_rect.x, cy - ROAD_WIDTH // 2, MAP_SIZE, ROAD_WIDTH))
+        self.panel._draw_lane_markings(screen, map_rect, ROAD_WIDTH)
+        self._stop_lines(screen, map_rect)
+        self._queues(screen, map_rect, frame)
+        self._signals(screen, map_rect, frame.replay.light_phase)
+        x = bounds.x + 422
+        self._text(screen, "RECORDED SIGNAL", x, bounds.y + 60, 13, self.MUTED, True)
+        phase_colour = self.panel._signal_colour(frame.replay.light_phase,
+                    movement="ew" if frame.replay.light_phase in (3, 4) else "ns")
+        if frame.replay.light_phase in (2, 5):
+            phase_colour = self.panel.RED
+        self._text(screen, SHORT_PHASE_LABELS[frame.replay.light_phase], x, bounds.y + 82, 18, phase_colour, True)
         values = (("Completed", str(frame.replay.throughput)),
                   ("Current queue", str(frame.replay.total_queue)),
                   ("Mean queue to now", f"{frame.mean_queue:.2f}"),
@@ -357,10 +483,10 @@ class CompareApp:
                   ("Signal changes", str(frame.changes)),
                   ("Transition time", f"{frame.transition_seconds} s"))
         for index, (label, value) in enumerate(values):
-            y = bounds.y + 132 + index * 52
+            y = bounds.y + 130 + index * 53
             self._text(screen, label.upper(), x, y, 13, self.MUTED, True)
             self._text(screen, value, x, y + 17, 21)
-        self._text(screen, "Schematic bars · shared scale", bounds.x + 22, bounds.bottom - 35, 15, self.MUTED)
+        self._text(screen, "Schematic queues · 1 car icon = 1 halted vehicle · +N hidden", bounds.x + 20, bounds.bottom - 33, 14, self.MUTED)
 
     def draw(self, screen: Any) -> None:
         """Draw both panels at one recorded second and the common controls."""
@@ -371,15 +497,15 @@ class CompareApp:
         self._text(screen, f"{SCENARIO_NAMES[self.pair.scenario]}  ·  seed {self.pair.seed}", 24, 39, 27, bold=True)
         self._text(screen, f"t = {p.second + 1:03d} / {self.pair.duration} s", 1010, 37, 26, bold=True)
         self._text(screen, f"Recorded second {p.second} · scheduled demand: {demand_period(self.pair.scenario, p.second)}", 25, 80, 17, self.MUTED)
-        self._panel(screen, pg.Rect(20, 113, 610, 463), "FIXED TIME  ·  30 s green", self.pair.fixed[p.second])
-        self._panel(screen, pg.Rect(650, 113, 610, 463), "DQN  ·  15 s minimum green", self.pair.dqn[p.second])
+        self._panel(screen, pg.Rect(20, 103, 610, 500), "FIXED TIME  ·  30 s GREEN", self.pair.fixed[p.second])
+        self._panel(screen, pg.Rect(650, 103, 610, 500), "DQN  ·  15 s MIN GREEN", self.pair.dqn[p.second])
         if self.pair.scenario == "changing":
             for boundary in (100, 200):
                 x = 24 + round((boundary - 1) / (p.pair.duration - 1) * 1232)
-                pg.draw.line(screen, self.MUTED, (x, 592), (x, 608), 2)
-        self.progress = pg.Rect(24, 591, 1232, 18)
+                pg.draw.line(screen, self.MUTED, (x, 614), (x, 632), 2)
+        self.progress = pg.Rect(24, 614, 1232, 18)
         pg.draw.rect(screen, (40, 54, 71), self.progress, border_radius=8)
-        fill = pg.Rect(24, 591, max(8, round((p.second + 1) / p.pair.duration * 1232)), 18)
+        fill = pg.Rect(24, 614, max(8, round((p.second + 1) / p.pair.duration * 1232)), 18)
         pg.draw.rect(screen, self.ACCENT, fill, border_radius=8)
         self.buttons = []
         controls = (("Pause" if p.playing else "Play", "play", None), ("Restart", "restart", None),
@@ -387,12 +513,12 @@ class CompareApp:
         x = 24
         for label, action, value in controls:
             width = 90 if action != "speed" else 60
-            bounds = pg.Rect(x, 631, width, 38)
+            bounds = pg.Rect(x, 652, width, 38)
             pg.draw.rect(screen, self.ACCENT if value == p.speed else (39, 52, 69), bounds, border_radius=7)
-            self._text(screen, label, x + 12, 638, 17)
+            self._text(screen, label, x + 12, 659, 17)
             self.buttons.append((bounds, action, value))
             x += width + 9
-        self._text(screen, "Space play/pause · R restart · 1/2/5 speed · arrows ±5 s · Esc exit", 526, 641, 15, self.MUTED)
+        self._text(screen, "Space play/pause · R restart · 1/2/5/0 speed · arrows ±5 s · Esc exit", 525, 661, 15, self.MUTED)
         if not p.playing and p.second == p.pair.duration - 1:
             self._end_summary(screen)
 

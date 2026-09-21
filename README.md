@@ -30,21 +30,25 @@ checkpoint hash, recorded CSV hashes, saved demand-file hash, matched
 timelines, and final metrics before opening the window. If a record is missing
 or invalid, it reports the problem instead of creating a replacement.
 
-Both panels use the same recorded second and queue-bar scale. The bars show
-aggregate stopped vehicles by approach, not individual vehicle positions.
-The signal colour shows the phase governing the displayed second. During
-playback, “Queue s / inserted” means accumulated halted-vehicle seconds
-divided by vehicles inserted up to that second. The end card compares the
-selected seed only, with DQN-minus-fixed differences; it does not show the
+Both panels use the same recorded second. Each small car is a stationary,
+schematic marker for one recorded halted vehicle, not its actual SUMO position
+or trajectory. Up to six fit per incoming approach; a `+N` marker shows any
+additional cars, while the direction label keeps the full recorded count.
+The prominent stop-line signals and phase label show the actual recorded phase
+governing the displayed second. During playback, “Queue s / inserted” means
+accumulated halted-vehicle seconds divided by vehicles inserted up to that
+second. The end card compares the selected seed only, with DQN-minus-fixed
+differences; it does not show the
 30-seed aggregate result. For changing demand, the label and timeline markers
 show the scheduled arrival periods at seconds 0, 100, and 200; existing queues
 continue across those boundaries.
 
-Controls: **Space** play/pause; **R** restart; **1**, **2**, **5** playback
-speed; **Left/Right** seek by five recorded seconds; click the progress bar
-to seek; **Esc** exit. Playback pauses at the final second, and R starts again
-without loading SUMO or the checkpoint. For a headless rendering check, set
-`SDL_VIDEODRIVER=dummy`; use a normal desktop display for the presentation.
+Controls: **Space** play/pause; **R** restart; **1**, **2**, **5**, **0** select
+1×, 2×, 5×, 10× playback; **Left/Right** seek by five recorded seconds; click
+the progress bar to seek; **Esc** exit. Playback pauses at the final second,
+and R starts again without loading SUMO or the checkpoint. For a headless
+rendering check, set `SDL_VIDEODRIVER=dummy`; use a normal desktop display for
+the presentation.
 
 ## Research question
 
